@@ -9,7 +9,8 @@ class CPUMetadata(Packet):
     name = "CPUMetadata"
     fields_desc = [ ByteField("fromCpu", 0),
                     ShortField("origEtherType", None),
-                    ShortField("srcPort", None)]
+                    ShortField("srcPort", None),
+                    ShortField("dstPort", None)] # Added dstPort to facilitate sending PWOSPF packets on specific port
 
 bind_layers(Ether, CPUMetadata, type=TYPE_CPU_METADATA)
 bind_layers(CPUMetadata, IP, origEtherType=0x0800)
