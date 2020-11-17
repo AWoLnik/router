@@ -1,6 +1,8 @@
 # Router Final Project
 Adam Wolnikowski
+
 16 November 2020
+
 Final project submission for CPSC 435 at Yale University with Prof. Robert Soule
 
 Implementation of an internet router control- and data-plane, in python and p4, respectively.
@@ -18,7 +20,7 @@ main.py instantiates the following topology:
 # Data-Plane Basic Requirements
 
 * ~~Provide a routing table~~ that can store IP address/prefix pairs with their associated port and next-hop IP address.
-* Use the routing table to perform a longest prefix match on destination IP addresses and return the appropriate egress port and next-hop address (or 0.0.0.0 for a directly attached destination).
+* ~~Use the routing table to perform a longest prefix match~~ on destination IP addresses and return the appropriate egress port and next-hop address (or 0.0.0.0 for a directly attached destination).
     * NOTE: We will use a ternary match table for the routing table because LPM tables are not fully supported by SDNet yet.
 * ~~Provide an ARP table~~ that can store at least 64 entries. This will accept an IP address as a search key and will return the associated MAC address (if found). This table is modified by the software, which runs its own ARP protocol.
 * ~~Provide a “local IP address table”~~. This will accept an IP address as a search key and will return a signal that indicates whether the correspond address was found. This table is used to identify IP addresses that should be forwarded to the CPU.
