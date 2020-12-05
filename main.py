@@ -163,10 +163,10 @@ print('CPU packets: ' + str(sw1.readCounter('switch_cpu_packets', 1)[0]))
 print('')
 
 # These table entries were added by the CPU:
-# sw1.printTableEntries()
-# sw2.printTableEntries()
-# sw3.printTableEntries()
-# sw4.printTableEntries()
+sw1.printTableEntries()
+sw2.printTableEntries()
+sw3.printTableEntries()
+sw4.printTableEntries()
 
 # print('Printing adjacency list from ' + cpu1.routerID)
 # for r in cpu1.adj_list:
