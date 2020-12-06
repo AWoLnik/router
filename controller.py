@@ -158,7 +158,7 @@ class LSUManager(Thread):
             time.sleep(self.lsuint)
 
 class RouterController(Thread):
-    def __init__(self, sw, routerID, MAC, areaID, intfs, lsuint=2, start_wait=0.3):
+    def __init__(self, sw, routerID, MAC, areaID, lsuint=2, start_wait=0.3):
         super(RouterController, self).__init__()
         assert len(intfs) == len(sw.intfs) - 1, "Length of intfs does not match number of switch interfaces"
         self.sw = sw
