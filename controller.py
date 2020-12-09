@@ -1,9 +1,9 @@
 from threading import Thread, Event
 from scapy.all import sendp
-from scapy.all import Packet, Ether, IP, ARP, ICMP
+from scapy.all import Packet, Ether, IP, ARP, ICMP, Raw
 from async_sniff import sniff
 from cpu_metadata import CPUMetadata
-from pwospf import PWOSPF, Hello, LSU, LSUad
+from pwospf import PWOSPF, Hello, LSU, LSUad, OSPF_PROT_NUM
 import time
 from collections import defaultdict
 
@@ -79,7 +79,7 @@ class HelloManager(Thread):
         self.intf = intf
 
     def run(self):
-        for i in range(5): #while True:
+        for i in range(300): #while True:
             # Send Hello packet
             if self.intf.port > 1:
                 pkt = Ether()/CPUMetadata()/IP()/PWOSPF()/Hello()
@@ -101,6 +101,7 @@ class HelloManager(Thread):
                 pkt[Hello].netmask = self.intf.mask
                 pkt[Hello].helloint = self.intf.helloint
 
+                # pkt.show2()
                 self.cntrl.send(pkt)
 
             # Remove timed-out neighbors
@@ -119,7 +120,7 @@ class LSUManager(Thread):
         self.cntrl = cntrl
 
     def run(self):
-        for i in range(5): #while True:
+        for i in range(300): #while True:
             # Create LSUads for each neighbor
             adList = []
             for i in self.cntrl.intfs:
@@ -160,7 +161,6 @@ class LSUManager(Thread):
 class RouterController(Thread):
     def __init__(self, sw, routerID, MAC, areaID, lsuint=2, start_wait=0.3):
         super(RouterController, self).__init__()
-        assert len(intfs) == len(sw.intfs) - 1, "Length of intfs does not match number of switch interfaces"
         self.sw = sw
         self.start_wait = start_wait # time to wait for the controller to be listening
         self.iface = sw.intfs[1].name
@@ -178,10 +178,18 @@ class RouterController(Thread):
         self.last_pkts = {} # dictionary storing last LSU pkt received from every router
         self.adj_list = {} # dictionary of lists for each router, list entries are (routerID, subnet, mask) tuples
 
+        # TODO: MY ROUTER INTERFACES MUST BE STATICALLY CONFIGURED HERE
+        intfs_init = [('10.0.2.0','255.255.255.0',4,1),
+                      ('10.0.2.1','255.255.255.0',4,2),
+                      ('10.0.2.2','255.255.255.0',4,3),
+                      ('10.0.2.3','255.255.255.0',4,4),
+                      ('10.0.2.4','255.255.255.0',4,5)]
+        assert len(intfs_init) == len(sw.intfs) - 1, "Length of intfs does not match number of switch interfaces"
+
         self.intfs = []
-        for i in range(len(intfs)):
-            # intfs arg should be a list of (addr, mask, helloint) tuples
-            self.intfs.append(Interface(intfs[i][0], intfs[i][1], intfs[i][2], intfs[i][3]))
+        for i in range(len(intfs_init)):
+            # intfs arg should be a list of (addr, mask, helloint, port) tuples
+            self.intfs.append(Interface(intfs_init[i][0], intfs_init[i][1], intfs_init[i][2], intfs_init[i][3]))
 
         self.intf_ips = set()
         for i in self.intfs:
@@ -353,6 +361,71 @@ class RouterController(Thread):
                 return True
         return False
 
+    def handlePWOSPFpacket(self, pkt):
+        if pkt[PWOSPF].version != 2: return
+        # TODO: verify checksum
+        if pkt[PWOSPF].areaID != self.areaID: return
+        if pkt[PWOSPF].auType != 0: return
+        if pkt[PWOSPF].auth != 0: return
+        routerID = pkt[PWOSPF].routerID
+
+        if Hello in pkt:
+            intf = None
+            for i in self.intfs:
+                if i.port == pkt[CPUMetadata].srcPort:
+                    intf = i
+            if pkt[Hello].netmask != intf.mask: return
+            if pkt[Hello].helloint != intf.helloint: return
+
+
+            intfIP = pkt[IP].src
+            if intf.hasNeighbor(routerID, intfIP):
+                intf.setNeighborUpdateTime(routerID, intfIP, time.time())
+            else:
+                intf.addNeighbor(routerID, intfIP)
+
+        if LSU in pkt:
+            if routerID == self.routerID: return
+
+            # ignore/drop duplicate packets or packets with no new info
+            # TODO: record time of last_pkts update and implement LSU timeout
+            if routerID in self.last_pkts:
+                last_pkt = self.last_pkts[routerID]
+                if pkt[LSU].sequence == last_pkt[LSU].sequence: return
+                if pkt[LSU].adList == last_pkt[LSU].adList and self.dijkstra_flag == 1:
+                    self.last_pkts[routerID] = pkt
+                    self.floodLSUPkt(pkt)
+                    return
+
+            self.last_pkts[routerID] = pkt
+
+            # Update adjacency list
+            # TODO: check for discrepancies before adding
+            if routerID not in self.adj_list:
+                self.adj_list[routerID] = []
+
+            # pkt.show2()
+
+            for LSUad in pkt[LSU].adList:
+                linkedID = LSUad.routerID
+                if linkedID not in self.adj_list:
+                    self.adj_list[linkedID] = []
+
+                if not self.linkExists(routerID, linkedID):
+                    self.adj_list[routerID].append((linkedID, LSUad.subnet, LSUad.mask))
+                if not self.linkExists(linkedID, routerID):
+                    self.adj_list[linkedID].append((routerID, LSUad.subnet, LSUad.mask))
+
+            if (time.time() - self.lsu_init_time) > self.lsu_wait: # wait for LSUs to propagate
+                self.dijkstra_flag = 1
+                parents = self.dijkstra(self.adj_list, self.routerID)
+
+                # Build routing table from Dijkstra's algorithm output
+                for r in self.adj_list:
+                    self.traceParent(parents, r, self.routerID, r)
+
+            self.floodLSUPkt(pkt)
+
     def handlePkt(self, pkt):
         assert CPUMetadata in pkt, "Should only receive packets from switch with special header, from " + self.routerID
 
@@ -372,74 +445,19 @@ class RouterController(Thread):
             # CPU getting packet not addressed to router implies destination unreachable
             if (pkt[IP].dst not in self.intf_ips) and (pkt[IP].dst != PWOSPF_HELLO_DEST):
                 self.respondICMPHostUnreachable(pkt)
-
-        if PWOSPF in pkt:
-            if pkt[PWOSPF].version != 2: return
-            # TODO: verify checksum
-            if pkt[PWOSPF].areaID != self.areaID: return
-            if pkt[PWOSPF].auType != 0: return
-            if pkt[PWOSPF].auth != 0: return
-            routerID = pkt[PWOSPF].routerID
-
-            if Hello in pkt:
-                intf = None
-                for i in self.intfs:
-                    if i.port == pkt[CPUMetadata].srcPort:
-                        intf = i
-                if pkt[Hello].netmask != intf.mask: return
-                if pkt[Hello].helloint != intf.helloint: return
-
-
-                intfIP = pkt[IP].src
-                if intf.hasNeighbor(routerID, intfIP):
-                    intf.setNeighborUpdateTime(routerID, intfIP, time.time())
-                else:
-                    intf.addNeighbor(routerID, intfIP)
-
-            if LSU in pkt:
-                if routerID == self.routerID: return
-
-                # ignore/drop duplicate packets or packets with no new info
-                # TODO: record time of last_pkts update and implement LSU timeout
-                if routerID in self.last_pkts:
-                    last_pkt = self.last_pkts[routerID]
-                    if pkt[LSU].sequence == last_pkt[LSU].sequence: return
-                    if pkt[LSU].adList == last_pkt[LSU].adList and self.dijkstra_flag == 1:
-                        self.last_pkts[routerID] = pkt
-                        self.floodLSUPkt(pkt)
-                        return
-
-                self.last_pkts[routerID] = pkt
-
-                # Update adjacency list
-                # TODO: check for discrepancies before adding
-                if routerID not in self.adj_list:
-                    self.adj_list[routerID] = []
-
-                for LSUad in pkt[LSU].adList:
-                    linkedID = LSUad.routerID
-                    if linkedID not in self.adj_list:
-                        self.adj_list[linkedID] = []
-
-                    if not self.linkExists(routerID, linkedID):
-                        self.adj_list[routerID].append((linkedID, LSUad.subnet, LSUad.mask))
-                    if not self.linkExists(linkedID, routerID):
-                        self.adj_list[linkedID].append((routerID, LSUad.subnet, LSUad.mask))
-
-                if (time.time() - self.lsu_init_time) > self.lsu_wait: # wait for LSUs to propagate
-                    self.dijkstra_flag = 1
-                    parents = self.dijkstra(self.adj_list, self.routerID)
-
-                    # Build routing table from Dijkstra's algorithm output
-                    for r in self.adj_list:
-                        self.traceParent(parents, r, self.routerID, r)
-
-                self.floodLSUPkt(pkt)
+            if pkt[IP].proto == OSPF_PROT_NUM:
+                try:
+                    pwospf_pkt = PWOSPF(pkt[Raw])
+                except Exception:
+                    print("Adam's router cannot parse this PWOSPF correctly")
+                    return
+                self.handlePWOSPFpacket(pkt[Ether]/pkt[CPUMetadata]/pkt[IP]/pwospf_pkt)
 
     def send(self, *args, **override_kwargs):
         pkt = args[0]
         assert CPUMetadata in pkt, "Controller must send packets with special header"
         pkt[CPUMetadata].fromCpu = 1
+        # pkt.show2()
         kwargs = dict(iface=self.iface, verbose=False)
         kwargs.update(override_kwargs)
         sendp(*args, **kwargs)
@@ -457,4 +475,9 @@ class RouterController(Thread):
 
     def join(self, *args, **kwargs):
         self.stop_event.set()
+        # print("Printing Adam's adjacency list:")
+        # for r in self.adj_list:
+        #     print(r)
+        #     print(self.adj_list[r])
+        # print('')
         super(RouterController, self).join(*args, **kwargs)

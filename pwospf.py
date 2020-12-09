@@ -13,7 +13,7 @@ class PWOSPF(Packet):
                     ByteField("type", None),
                     ShortField("length", None),
                     IPField("routerID", None),
-                    IntField("areaID", None),
+                    IPField("areaID", None),
                     ShortField("checksum", None),
                     ShortField("auType", 0),
                     LongField("auth", 0)]
@@ -33,13 +33,27 @@ class LSUad(Packet):
     def extract_padding(self, s):
         return '', s
 
+# class LSU(Packet):
+#     name = "LSU"
+#     fields_desc = [ ShortField("sequence", None),
+#                     ShortField("ttl", None),
+#                     FieldLenField("numAds", None, fmt="I", count_of="adList"),
+#                     PacketListField("adList", None, LSUad, count_from= lambda pkt: pkt.numAds)]
+
+#     def extract_padding(self, p):
+#         return "", p
+
 class LSU(Packet):
     name = "LSU"
-    fields_desc = [ ShortField("sequence", None),
-                    ShortField("ttl", None),
-                    FieldLenField("numAds", None, fmt="I", count_of="adList"),
-                    PacketListField("adList", None, LSUad, count_from= lambda pkt: pkt.numAds)]
+    fields_desc = [ ShortField("sequence", 0),
+                    ShortField("ttl", 64),
+                    FieldLenField("numAds", 0, count_of='adList'),
+                    PacketListField('adList', [], LSUad, count_from = lambda a : (a.numAds))
+                    ]
 
-bind_layers(IP, PWOSPF, proto=OSPF_PROT_NUM)
+    def extract_padding(self, p):
+        return "", p
+
+# bind_layers(IP, PWOSPF, proto=OSPF_PROT_NUM)
 bind_layers(PWOSPF, Hello, type=HELLO_TYPE)
 bind_layers(PWOSPF, LSU, type=LSU_TYPE)
